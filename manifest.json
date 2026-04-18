@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Facebook Scraper",
+  "version": "1.0",
+  "description": "Scrape Facebook posts and comments",
+  "permissions": ["scripting", "activeTab"],
+  "host_permissions": ["https://*.facebook.com/*"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.facebook.com/*"],
+      "js": ["content.js"]
+    }
+  ]
+}
