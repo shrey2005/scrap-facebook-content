@@ -26,8 +26,6 @@ async function autoScrollDynamic({ maxRounds = 10 } = {}) {
             }
         }
 
-        console.log("🔽 Scrolling by:", scrollDistance);
-
         window.scrollBy({
             top: scrollDistance,
             behavior: "smooth"
@@ -57,167 +55,187 @@ async function autoScrollDynamic({ maxRounds = 10 } = {}) {
     }
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action !== "SCRAPE") return;
+async function scrapeFacebook() {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-    (async () => {
-        console.log("🚀 FB INCREMENTAL SCRAPER STARTED");
+    const collected = new Map();
 
-        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    console.log("🚀 Step 1: Scrolling...");
+    // await autoScrollDynamic({ maxRounds: 15 });
 
-        const collected = new Map(); // 🔥 dedup store
+    console.log("📦 Step 2: Processing post-by-post...");
 
-        function extractPosts() {
-            const authorLinks = document.querySelectorAll('h2 a[role="link"]');
+    const postElements = document.querySelectorAll('h2 a[role="link"]');
 
-            console.log("👤 Found:", authorLinks.length);
+    console.log("🧱 Total posts found:", postElements.length);
 
-            authorLinks.forEach((authorEl) => {
+    for (let authorEl of postElements) {
+        try {
+            // =========================
+            // 🔥 FIND POST CONTAINER
+            // =========================
+            let section = authorEl;
+            while (section && !section.querySelector('[dir="auto"]')) {
+                section = section.parentElement;
+            }
+            if (!section) continue;
+
+            // =========================
+            // 🔥 POST DATA
+            // =========================
+            const author_name = authorEl.innerText?.trim();
+            const author_profile = authorEl.href || null;
+
+            if (!author_name) continue;
+
+            const postKey = "post_" + author_name + author_profile;
+            if (collected.has(postKey)) continue;
+
+            let post_content = null;
+            const contentEls = section.querySelectorAll('[dir="auto"]');
+
+            for (let el of contentEls) {
+                const text = el.innerText?.trim();
+                if (
+                    text &&
+                    text.length > 20 &&
+                    text !== author_name &&
+                    !text.includes("Like") &&
+                    !text.includes("Reply")
+                ) {
+                    post_content = text;
+                    break;
+                }
+            }
+
+            let author_image = null;
+            const img = section.querySelector("image");
+            if (img) {
+                author_image = img.getAttribute("xlink:href");
+            }
+
+            // =========================
+            // 🔥 ✅ POST URL (NEW)
+            // =========================
+            let post_url = null;
+
+            const linkEl =
+                section.querySelector('a[href*="/posts/"]') ||
+                section.querySelector('a[href*="/permalink/"]') ||
+                section.querySelector('a[href*="story.php"]');
+
+            if (linkEl) {
+                post_url = linkEl.href;
+            }
+
+
+            const postData = {
+                author_name,
+                author_profile,
+                author_image,
+                post_content,
+                post_url,
+                type: "post"
+            };
+
+            collected.set(postKey, postData);
+            console.log("✅ Post Added:", postData);
+
+            // =========================
+            // 🔥 COMMENTS FOR THIS POST ONLY
+            // =========================
+            const commentBlocks = section.querySelectorAll(
+                'div[role="article"][aria-label*="Comment"]'
+            );
+
+            console.log(`💬 Comments for post (${author_name}):`, commentBlocks.length);
+
+            commentBlocks.forEach((block) => {
                 try {
-                    const author_name = authorEl.innerText?.trim();
-                    const author_profile = authorEl.href;
+                    const authorEl = block.querySelector('a[role="link"] span[dir="auto"]');
+                    const comment_author = authorEl?.innerText?.trim();
 
-                    if (!author_name || !author_profile) return;
+                    const profileEl = block.querySelector('a[role="link"]');
+                    const comment_profile = profileEl?.href || null;
 
-                    // 🔥 unique key (important)
-                    const key = author_profile;
+                    if (!comment_author) return;
 
-                    if (collected.has(key)) return; // skip duplicate
+                    const commentKey = "comment_" + comment_author + comment_profile;
+                    if (collected.has(commentKey)) return;
 
-                    // =========================
-                    // FIND SECTION (STRUCTURE SAFE)
-                    // =========================
-                    let section = authorEl;
-
-                    while (section && !section.querySelector('[dir="auto"]')) {
-                        section = section.parentElement;
-                    }
-
-                    if (!section) return;
-
-                    // =========================
-                    // CONTENT
-                    // =========================
                     let post_content = null;
+                    const textEls = block.querySelectorAll('div[dir="auto"]');
 
-                    const contentEls = section.querySelectorAll('[dir="auto"]');
-
-                    for (let el of contentEls) {
+                    for (let el of textEls) {
                         const text = el.innerText?.trim();
 
                         if (
                             text &&
-                            text.length > 20 &&
-                            text !== author_name &&
+                            text !== comment_author &&
                             !text.includes("Like") &&
-                            !text.includes("Reply")
+                            !text.includes("Reply") &&
+                            !text.includes("See translation")
                         ) {
                             post_content = text;
                             break;
                         }
                     }
 
-                    // =========================
-                    // IMAGE
-                    // =========================
                     let author_image = null;
-                    const imageEl = section.querySelector("image");
-                    if (imageEl) {
-                        author_image = imageEl.getAttribute("xlink:href");
+                    const img = block.querySelector("image");
+                    if (img) {
+                        author_image = img.getAttribute("xlink:href");
                     }
 
-                    // =========================
-                    // TIME
-                    // =========================
-                    let post_time = null;
-                    const timeEl = section.querySelector('a[aria-label]');
-                    if (timeEl) {
-                        post_time = timeEl.getAttribute("aria-label");
-                    }
-
-                    // =========================
-                    // POST ID
-                    // =========================
-                    let postId = null;
-                    const postLink = section.querySelector('a[href*="/posts/"]');
-                    if (postLink) {
-                        const match = postLink.href.match(/posts\/(\d+)/);
-                        if (match) postId = match[1];
-                    }
-
-                    const data = {
-                        postId,
-                        author_name,
-                        author_profile,
+                    const commentData = {
+                        author_name: comment_author,
+                        author_profile: comment_profile,
                         author_image,
                         post_content,
-                        post_time
+                        post_url,
+                        type: "comment"
                     };
 
-                    collected.set(key, data);
+                    collected.set(commentKey, commentData);
 
-                    console.log("✅ Added:", data);
+                    console.log("💬 Comment Added:", commentData);
 
                 } catch (err) {
-                    console.error("❌ Extract error:", err);
+                    console.error("❌ Comment error:", err);
                 }
             });
-        }
-
-        // =========================
-        // 🔥 INCREMENTAL SCROLL LOOP
-        // =========================
-        let idleRounds = 0;
-
-        for (let i = 0; i < 20; i++) {
-            console.log(`\n🔁 SCROLL ITERATION ${i + 1}`);
-
-            // 🔥 STEP 1: extract BEFORE scroll (captures first items)
-            extractPosts();
-
-            const beforeCount = collected.size;
-
-            // =========================
-            // DYNAMIC SCROLL
-            // =========================
-            const scrollDistance = window.innerHeight * 0.8;
 
             window.scrollBy({
-                top: scrollDistance,
+                top: window.innerHeight * 0.8,
                 behavior: "smooth"
             });
 
             await sleep(2000);
 
-            // 🔥 STEP 2: extract AFTER scroll
-            extractPosts();
-
-            const afterCount = collected.size;
-
-            // =========================
-            // STOP CONDITION
-            // =========================
-            if (afterCount === beforeCount) {
-                idleRounds++;
-                console.log("⏸️ No new data");
-
-                if (idleRounds >= 3) {
-                    console.log("🛑 Stopping (no more new posts)");
-                    break;
-                }
-            } else {
-                idleRounds = 0;
-            }
+        } catch (err) {
+            console.error("❌ Post loop error:", err);
         }
+    }
 
-        // =========================
-        // FINAL RESULT
-        // =========================
-        const results = Array.from(collected.values());
+    const results = Array.from(collected.values());
 
-        console.log("🎯 FINAL RESULT:", results);
+    console.log("🎯 FINAL:", results);
+    return results;
+}
 
-        return results;
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action !== "SCRAPE") return;
+
+    (async () => {
+        console.log("🚀 FB INCREMENTAL SCRAPER STARTED");
+
+        scrapeFacebook().then((data) => {
+            console.log("📤 Sending data to popup:", data);
+            sendResponse({ success: true, data });
+        }).catch((err) => {
+            console.error("❌ Scrape error:", err);
+            sendResponse({ success: false, error: err.message });
+        });
     })();
 
     return true;
